@@ -3,7 +3,7 @@ import { C } from '@deltachat/jsonrpc-client'
 
 import { Timespans } from '../../../../shared/constants'
 import { ContextMenuItem } from '../ContextMenu'
-import MailingListProfile from '../dialogs/MessageListProfile'
+import MailingListProfile from '../dialogs/MailingListProfile'
 import { BackendRemote } from '../../backend-com'
 import { selectedAccountId } from '../../ScreenController'
 import { ContextMenuContext } from '../../contexts/ContextMenuContext'
@@ -91,7 +91,7 @@ export function useChatListContextMenu(): {
     openBlockFirstContactOfChatDialog,
     openEncryptionInfoDialog,
     openDeleteChatDialog,
-    openLeaveChatDialog,
+    openLeaveGroupOrChannelDialog,
   } = useChatDialog()
   const openViewGroupDialog = useOpenViewGroupDialog()
   const openViewProfileDialog = useOpenViewProfileDialog()
@@ -129,7 +129,10 @@ export function useChatListContextMenu(): {
         if (!fullChat) {
           throw new Error('chat was not found')
         }
-        if (fullChat.chatType !== C.DC_CHAT_TYPE_MAILINGLIST) {
+        if (
+          fullChat.chatType !== C.DC_CHAT_TYPE_IN_BROADCAST &&
+          fullChat.chatType !== C.DC_CHAT_TYPE_MAILINGLIST
+        ) {
           openViewProfileDialog(accountId, fullChat.contactIds[0])
         } else {
           openDialog(MailingListProfile, {
@@ -137,7 +140,12 @@ export function useChatListContextMenu(): {
           })
         }
       }
-      const onLeaveGroup = () => openLeaveChatDialog(accountId, chatListItem.id)
+      const onLeaveGroupOrChannel = () =>
+        openLeaveGroupOrChannelDialog(
+          accountId,
+          chatListItem.id,
+          chatListItem.chatType === C.DC_CHAT_TYPE_GROUP
+        )
       const onBlockContact = () =>
         openBlockFirstContactOfChatDialog(accountId, chatListItem)
       const onUnmuteChat = () => unmuteChat(accountId, chatListItem.id)
@@ -149,6 +157,11 @@ export function useChatListContextMenu(): {
         tx,
         selectedChatId === chatListItem.id
       )
+
+      const isGroup = chatListItem.chatType === C.DC_CHAT_TYPE_GROUP
+
+      const isOutBroadcast =
+        chatListItem.chatType === C.DC_CHAT_TYPE_OUT_BROADCAST
 
       const menu: (ContextMenuItem | false)[] = chatListItem
         ? [
@@ -231,24 +244,32 @@ export function useChatListContextMenu(): {
             archive,
             { type: 'separator' },
             // View Profile
-            !chatListItem.isGroup && {
+            !isGroup && {
               label: tx('menu_view_profile'),
               action: onViewProfile,
             },
+            // View Group Profile (for non encrypted groups)
+            isGroup &&
+              !chatListItem.isEncrypted &&
+              chatListItem.isSelfInGroup && {
+                label: tx('menu_view_profile'),
+                action: onViewGroup,
+              },
             // Edit Group
-            chatListItem.isGroup &&
+            isGroup &&
+              chatListItem.isEncrypted &&
               chatListItem.isSelfInGroup && {
                 label: tx('menu_edit_group'),
                 dataTestid: 'edit-group',
                 action: onViewGroup,
               },
-            // Edit Broadcast List
-            chatListItem.isBroadcast && {
-              label: tx('edit_broadcast_list'),
+            // Edit Channel
+            isOutBroadcast && {
+              label: tx('edit_channel'),
               action: onViewGroup,
             },
             // Clone Group
-            chatListItem.isGroup && {
+            isGroup && {
               label: tx('clone_chat'),
               action: () => {
                 openDialog(CloneChat, {
@@ -265,15 +286,26 @@ export function useChatListContextMenu(): {
                 action: onEncrInfo,
               },
             { type: 'separator' },
+            // Leave channel
+            chatListItem.chatType === C.DC_CHAT_TYPE_IN_BROADCAST &&
+              !chatListItem.isContactRequest && {
+                label: tx('menu_leave_channel'),
+                action: onLeaveGroupOrChannel,
+              },
             // Leave group
-            chatListItem.isGroup &&
+            isGroup &&
+              chatListItem.isEncrypted &&
               chatListItem.isSelfInGroup && {
                 label: tx('menu_leave_group'),
-                action: onLeaveGroup,
+                action: onLeaveGroupOrChannel,
               },
             // Block contact
-            !chatListItem.isGroup &&
-              !(chatListItem.isSelfTalk || chatListItem.isDeviceTalk) && {
+            !isGroup &&
+              !(
+                chatListItem.isSelfTalk ||
+                chatListItem.isDeviceTalk ||
+                isOutBroadcast
+              ) && {
                 label: tx('menu_block_contact'),
                 action: onBlockContact,
               },

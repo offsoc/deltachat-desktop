@@ -5,6 +5,8 @@ import React, {
   useCallback,
   ComponentType,
   useMemo,
+  HTMLAttributes,
+  useLayoutEffect,
 } from 'react'
 import {
   FixedSizeList as List,
@@ -45,13 +47,20 @@ import type {
 } from './ChatListItemRow'
 import { isInviteLink } from '../../../../shared/util'
 import { RovingTabindexProvider } from '../../contexts/RovingTabindex'
+import { useRpcFetch } from '../../hooks/useFetch'
+import { useSettingsStore } from '../../stores/settings'
 
 const enum LoadStatus {
   FETCHING = 1,
   LOADED = 2,
 }
 
-export function ChatListPart({
+export function ChatListPart<
+  T extends
+    | ChatListItemData
+    | ContactChatListItemData
+    | MessageChatListItemData,
+>({
   isRowLoaded,
   loadMoreRows,
   rowCount,
@@ -60,6 +69,7 @@ export function ChatListPart({
   height,
   itemKey,
   setListRef,
+  olElementAttrs,
   itemData,
   itemHeight,
 }: {
@@ -67,11 +77,15 @@ export function ChatListPart({
   loadMoreRows: (startIndex: number, stopIndex: number) => Promise<any>
   rowCount: number
   width: number | string
-  children: ComponentType<ListChildComponentProps<any>>
+  children: ComponentType<ListChildComponentProps<T>>
   height: number
-  itemKey: ListItemKeySelector<any>
-  setListRef?: (ref: List<any> | null) => void
-  itemData: ChatListItemData | ContactChatListItemData | MessageChatListItemData
+  itemKey: ListItemKeySelector<T>
+  setListRef?: (ref: List<T> | null) => void
+  /**
+   * This does _not_ support maps with dynamically added/removed keys.
+   */
+  olElementAttrs?: HTMLAttributes<HTMLOListElement>
+  itemData: T
   itemHeight: number
 }) {
   const infiniteLoaderRef = useRef<InfiniteLoader | null>(null)
@@ -92,6 +106,26 @@ export function ChatListPart({
     // So let's play it safe.
   })
 
+  const olRef = useRef<HTMLOListElement>(null)
+  // 'react-window' does not expose API to set attributes on its element,
+  // so we have to `useLayoutEffect`.
+  useLayoutEffect(() => {
+    if (olRef.current == null) {
+      return
+    }
+    if (olElementAttrs == undefined) {
+      return
+    }
+
+    for (const [key, value] of Object.entries(olElementAttrs)) {
+      if (value == undefined) {
+        olRef.current.removeAttribute(key)
+      } else {
+        olRef.current.setAttribute(key, value)
+      }
+    }
+  })
+
   return (
     <InfiniteLoader
       isItemLoaded={isRowLoaded}
@@ -102,6 +136,7 @@ export function ChatListPart({
       {({ onItemsRendered, ref }) => (
         <List
           innerElementType={'ol'}
+          innerRef={olRef}
           className='react-window-list-reset'
           height={height}
           itemCount={rowCount}
@@ -168,6 +203,9 @@ export default function ChatList(props: {
   const tabindexWrapperElementContacts = useRef<HTMLDivElement>(null)
   const tabindexWrapperElementMessages = useRef<HTMLDivElement>(null)
 
+  const settingsStore = useSettingsStore()[0]
+  const isChatmail = settingsStore?.settings.is_chatmail === '1'
+
   const addContactOnClick = async () => {
     if (!queryStrIsValidEmail || !queryStr) return
 
@@ -225,42 +263,41 @@ export default function ChatList(props: {
         ? CHATLISTITEM_MESSAGE_HEIGHT
         : 0))
 
-  // scroll to selected chat ---
-  const listRefRef = useRef<List<any>>(null)
-  const selectedChatIndex = chatListIds.findIndex(
-    chatId => chatId === selectedChatId
-  )
-
-  const scrollSelectedChatIntoView = useCallback((index: number) => {
+  const chatListRef = useRef<List<any>>(null)
+  const scrollChatIntoView = useCallback((index: number) => {
     if (index !== -1) {
-      listRefRef.current?.scrollToItem(index)
+      chatListRef.current?.scrollToItem(index)
     }
   }, [])
 
+  const selectedChatIndex = useMemo(
+    () => (selectedChatId != null ? chatListIds.indexOf(selectedChatId) : -1),
+    [chatListIds, selectedChatId]
+  )
   const lastShowArchivedChatsState = useRef(showArchivedChats)
   const lastQuery = useRef(queryStr)
   // on select chat - scroll to selected chat - chatView
   // follow chat after loading or when it's position in the chatlist changes
   useEffect(() => {
     if (isSearchActive && lastQuery.current !== queryStr) {
-      scrollSelectedChatIntoView(0)
+      scrollChatIntoView(0)
       // search is active, don't scroll to selected chat, scroll up instead when queryStr changes
       lastQuery.current = queryStr
       return
     }
     // when showArchivedChats changes, select selected chat if it is archived/not-archived otherwise select first item
     if (selectedChatIndex !== -1) {
-      scrollSelectedChatIntoView(selectedChatIndex)
+      scrollChatIntoView(selectedChatIndex)
     } else {
       if (lastShowArchivedChatsState.current !== showArchivedChats) {
-        scrollSelectedChatIntoView(0)
+        scrollChatIntoView(0)
       }
     }
     lastShowArchivedChatsState.current = showArchivedChats
   }, [
     selectedChatIndex,
     isSearchActive,
-    scrollSelectedChatIntoView,
+    scrollChatIntoView,
     showArchivedChats,
     queryStr,
   ])
@@ -269,14 +306,12 @@ export default function ChatList(props: {
 
   // KeyboardShortcuts ---------
   useKeyBindingAction(KeybindAction.ChatList_ScrollToSelectedChat, () =>
-    scrollSelectedChatIntoView(selectedChatIndex)
+    scrollChatIntoView(selectedChatIndex)
   )
 
   useKeyBindingAction(KeybindAction.ChatList_SelectNextChat, () => {
     if (selectedChatId === null) return selectFirstChat()
-    const selectedChatIndex = chatListIds.findIndex(
-      chatId => chatId === selectedChatId
-    )
+    const selectedChatIndex = chatListIds.indexOf(selectedChatId)
     const newChatId = chatListIds[selectedChatIndex + 1]
     if (newChatId && newChatId !== C.DC_CHAT_ID_ARCHIVED_LINK) {
       selectChat(accountId, newChatId)
@@ -285,9 +320,7 @@ export default function ChatList(props: {
 
   useKeyBindingAction(KeybindAction.ChatList_SelectPreviousChat, () => {
     if (selectedChatId === null) return selectFirstChat()
-    const selectedChatIndex = chatListIds.findIndex(
-      chatId => chatId === selectedChatId
-    )
+    const selectedChatIndex = chatListIds.indexOf(selectedChatId)
     const newChatId = chatListIds[selectedChatIndex - 1]
     if (newChatId && newChatId !== C.DC_CHAT_ID_ARCHIVED_LINK) {
       selectChat(accountId, newChatId)
@@ -308,8 +341,11 @@ export default function ChatList(props: {
   //   selectFirstChat()
   // )
 
-  const chatlistData = useMemo(() => {
+  const chatlistData: ChatListItemData = useMemo(() => {
     return {
+      // This should be in sync with `olElementAttrs` of `ChatListPart`.
+      roleTabs: true,
+
       selectedChatId,
       chatListIds,
       chatCache,
@@ -326,19 +362,14 @@ export default function ChatList(props: {
     activeContextMenuChatId,
   ])
 
-  const contactlistData: {
-    contactCache: {
-      [id: number]: Type.Contact | undefined
-    }
-    contactIds: number[]
-  } = useMemo(() => {
+  const contactlistData: ContactChatListItemData = useMemo(() => {
     return {
       contactCache,
       contactIds,
     }
   }, [contactCache, contactIds])
 
-  const messagelistData = useMemo(() => {
+  const messagelistData: MessageChatListItemData = useMemo(() => {
     return {
       messageResultIds,
       messageCache,
@@ -347,17 +378,16 @@ export default function ChatList(props: {
     }
   }, [messageResultIds, messageCache, queryStr, queryChatId])
 
-  const [searchChatInfo, setSearchChatInfo] = useState<T.BasicChat | null>(null)
-  useEffect(() => {
-    if (queryChatId) {
-      BackendRemote.rpc
-        .getBasicChatInfo(accountId, queryChatId)
-        .then(setSearchChatInfo)
-        .catch(console.error)
-    } else {
-      setSearchChatInfo(null)
-    }
-  }, [accountId, queryChatId, isSearchActive])
+  const searchChatInfoFetch = useRpcFetch(
+    BackendRemote.rpc.getBasicChatInfo,
+    queryChatId ? [accountId, queryChatId] : null
+  )
+  if (searchChatInfoFetch?.result?.ok === false) {
+    console.error(searchChatInfoFetch.result.err)
+  }
+  const searchChatInfo = searchChatInfoFetch?.result?.ok
+    ? searchChatInfoFetch.result.value
+    : null
 
   // Render --------------------
   const tx = useTranslationFunction()
@@ -368,7 +398,10 @@ export default function ChatList(props: {
         <AutoSizer disableWidth>
           {({ height }) => (
             <div ref={tabindexWrapperElementChats}>
-              <div className='search-result-divider'>
+              <div
+                id='search-result-divider-messages'
+                className='search-result-divider'
+              >
                 {tx('search_in', searchChatInfo.name)}
                 {messageResultIds.length !== 0 &&
                   ': ' + translate_n('n_messages', messageResultIds.length)}
@@ -378,6 +411,9 @@ export default function ChatList(props: {
                 classNameOfTargetElements={rovingTabindexItemsClassName}
               >
                 <ChatListPart
+                  olElementAttrs={{
+                    'aria-labelledby': 'search-result-divider-messages',
+                  }}
                   isRowLoaded={isMessageLoaded}
                   loadMoreRows={loadMessages}
                   rowCount={messageResultIds.length}
@@ -406,7 +442,10 @@ export default function ChatList(props: {
         {({ height }) => (
           <>
             {isSearchActive && (
-              <div className='search-result-divider'>
+              <div
+                id='search-result-divider-chats'
+                className='search-result-divider'
+              >
                 {translate_n('n_chats', chatListIds.length)}
               </div>
             )}
@@ -419,13 +458,42 @@ export default function ChatList(props: {
             >
               <div ref={tabindexWrapperElementChats}>
                 <ChatListPart
+                  olElementAttrs={{
+                    // Note that there are many `ChatListPart` instances,
+                    // but not all of them are `role='tablist'`.
+                    //
+                    // Also note that not all the interactive items
+                    // have role='tab'. For example, `ChatListItemArchiveLink`.
+                    //
+                    // Aaand also note that we do not set `role='tabpanel'`
+                    // on the "chat" section, out of fear that screen readers
+                    // will get too verbose.
+                    // TODO this should be reconsidered.
+                    // The same goes for the accounts list items,
+                    // which are arguably also tabs.
+                    //
+                    // This should be in sync with `chatlistData.roleTabs`.
+                    role: 'tablist',
+                    'aria-orientation': 'vertical',
+
+                    // TODO perhaps `pref_` is not nice,
+                    // we might need a separate string.
+                    // The same goes for other occurrences
+                    // of `tx('pref_chats')`.
+                    'aria-labelledby': isSearchActive
+                      ? 'search-result-divider-chats'
+                      : undefined,
+                    'aria-label': !isSearchActive
+                      ? tx('pref_chats')
+                      : undefined,
+                  }}
                   isRowLoaded={isChatLoaded}
                   loadMoreRows={loadChats}
                   rowCount={chatListIds.length}
                   width={'100%'}
                   height={chatsHeight(height)}
                   setListRef={(ref: List<any> | null) =>
-                    ((listRefRef.current as any) = ref)
+                    ((chatListRef.current as any) = ref)
                   }
                   itemKey={index => 'key' + chatListIds[index]}
                   itemData={chatlistData}
@@ -436,7 +504,10 @@ export default function ChatList(props: {
               </div>
               {isSearchActive && (
                 <>
-                  <div className='search-result-divider'>
+                  <div
+                    id='search-result-divider-contacts'
+                    className='search-result-divider'
+                  >
                     {translate_n('n_contacts', contactIds.length)}
                   </div>
                   <RovingTabindexProvider
@@ -445,6 +516,9 @@ export default function ChatList(props: {
                   >
                     <div ref={tabindexWrapperElementContacts}>
                       <ChatListPart
+                        olElementAttrs={{
+                          'aria-labelledby': 'search-result-divider-contacts',
+                        }}
                         isRowLoaded={isContactLoaded}
                         loadMoreRows={loadContact}
                         rowCount={contactIds.length}
@@ -456,7 +530,8 @@ export default function ChatList(props: {
                       >
                         {ChatListItemRowContact}
                       </ChatListPart>
-                      {contactIds.length === 0 &&
+                      {!isChatmail &&
+                        contactIds.length === 0 &&
                         chatListIds.length === 0 &&
                         queryStrIsValidEmail && (
                           <PseudoListItemAddContact
@@ -473,7 +548,10 @@ export default function ChatList(props: {
                       )}
                     </div>
                   </RovingTabindexProvider>
-                  <div className='search-result-divider'>
+                  <div
+                    id='search-result-divider-messages'
+                    className='search-result-divider'
+                  >
                     {translated_messages_label(messageResultIds.length)}
                   </div>
 
@@ -483,6 +561,9 @@ export default function ChatList(props: {
                   >
                     <div ref={tabindexWrapperElementMessages}>
                       <ChatListPart
+                        olElementAttrs={{
+                          'aria-labelledby': 'search-result-divider-messages',
+                        }}
                         isRowLoaded={isMessageLoaded}
                         loadMoreRows={loadMessages}
                         rowCount={messageResultIds.length}

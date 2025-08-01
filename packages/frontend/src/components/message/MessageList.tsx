@@ -17,7 +17,7 @@ import { getLogger } from '../../../../shared/logger'
 import { KeybindAction } from '../../keybindings'
 import { useMessageList } from '../../stores/messagelist'
 import { BackendRemote, onDCEvent } from '../../backend-com'
-import { debouncedUpdateBadgeCounter } from '../../system-integration/badge-counter'
+import { throttledUpdateBadgeCounter } from '../../system-integration/badge-counter'
 import { MessagesDisplayContext } from '../../contexts/MessagesDisplayContext'
 import useTranslationFunction from '../../hooks/useTranslationFunction'
 import useKeyBindingAction from '../../hooks/useKeyBindingAction'
@@ -32,17 +32,19 @@ import {
   RovingTabindexProvider,
   useRovingTabindex,
 } from '../../contexts/RovingTabindex'
+import { markChatAsSeen } from '../../backend/chat'
 
 type ChatTypes =
   | C.DC_CHAT_TYPE_SINGLE
   | C.DC_CHAT_TYPE_GROUP
-  | C.DC_CHAT_TYPE_BROADCAST
+  | C.DC_CHAT_TYPE_IN_BROADCAST
+  | C.DC_CHAT_TYPE_OUT_BROADCAST
   | C.DC_CHAT_TYPE_MAILINGLIST
   | C.DC_CHAT_TYPE_UNDEFINED
 
 const onWindowFocus = (accountId: number) => {
   log.debug('window focused')
-  const messageElements = Array.prototype.slice.call(
+  const messageElements: HTMLElement[] = Array.prototype.slice.call(
     document.querySelectorAll('#message-list .message-observer-bottom')
   )
 
@@ -57,9 +59,11 @@ const onWindowFocus = (accountId: number) => {
     )
   })
 
-  const messageIdsToMarkAsRead = visibleElements.map(el =>
-    Number.parseInt(el.getAttribute('id').split('-')[1])
-  )
+  const messageIdsToMarkAsRead = visibleElements
+    .map(el =>
+      el.dataset.messageid ? Number.parseInt(el.dataset.messageid) : undefined
+    )
+    .filter(id => id != undefined)
 
   if (messageIdsToMarkAsRead.length !== 0) {
     log.debug(
@@ -71,7 +75,7 @@ const onWindowFocus = (accountId: number) => {
     // so `.then(debouncedUpdateBadgeCounter)` is probably not necessary.
     BackendRemote.rpc
       .markseenMsgs(accountId, messageIdsToMarkAsRead)
-      .then(debouncedUpdateBadgeCounter)
+      .then(throttledUpdateBadgeCounter)
   }
 }
 
@@ -172,9 +176,23 @@ export default function MessageList({ accountId, chat, refComposer }: Props) {
       const messageIdsToMarkAsRead = []
       for (const entry of entries) {
         if (!entry.isIntersecting) continue
-        const messageKey = entry.target.getAttribute('id')
-        if (messageKey === null) continue
-        const messageId = messageKey.split('-')[1]
+        if (!(entry.target instanceof HTMLElement)) {
+          log.error(
+            'onUnreadMessageInView: entry.target is not HTMLElement:',
+            entry.target
+          )
+          continue
+        }
+        const messageId = entry.target.dataset.messageid
+          ? Number.parseInt(entry.target.dataset.messageid)
+          : undefined
+        if (messageId == undefined || !Number.isSafeInteger(messageId)) {
+          log.error(
+            'onUnreadMessageInView: failed to get message id from element',
+            entry.target
+          )
+          continue
+        }
         const messageHeight = entry.target.clientHeight
 
         log.debug(
@@ -184,7 +202,7 @@ export default function MessageList({ accountId, chat, refComposer }: Props) {
           `onUnreadMessageInView: messageId ${messageId} marking as read`
         )
 
-        messageIdsToMarkAsRead.push(Number.parseInt(messageId))
+        messageIdsToMarkAsRead.push(messageId)
         if (unreadMessageInViewIntersectionObserver.current === null) continue
         unreadMessageInViewIntersectionObserver.current.unobserve(entry.target)
       }
@@ -197,7 +215,7 @@ export default function MessageList({ accountId, chat, refComposer }: Props) {
         // so `.then(debouncedUpdateBadgeCounter)` is probably not necessary.
         BackendRemote.rpc
           .markseenMsgs(accountId, messageIdsToMarkAsRead)
-          .then(debouncedUpdateBadgeCounter)
+          .then(throttledUpdateBadgeCounter)
       }
     })
   }
@@ -732,6 +750,8 @@ export const MessageListInner = React.memo(
     unreadMessageInViewIntersectionObserver: React.MutableRefObject<IntersectionObserver | null>
     loadMissingMessages: () => Promise<void>
   }) => {
+    const tx = useTranslationFunction()
+
     const {
       onScroll,
       onScrollEnd,
@@ -746,10 +766,7 @@ export const MessageListInner = React.memo(
     } = props
 
     const conversationType: ConversationType = {
-      hasMultipleParticipants:
-        chat.chatType === C.DC_CHAT_TYPE_GROUP ||
-        chat.chatType === C.DC_CHAT_TYPE_MAILINGLIST ||
-        chat.chatType === C.DC_CHAT_TYPE_BROADCAST,
+      hasMultipleParticipants: chat.chatType !== C.DC_CHAT_TYPE_SINGLE,
       isDeviceChat: chat.isDeviceChat as boolean,
       chatType: chat.chatType as number,
     }
@@ -859,14 +876,14 @@ export const MessageListInner = React.memo(
     if (!loaded) {
       return (
         <div id='message-list' ref={messageListRef} onScroll={onScroll2}>
-          <ol></ol>
+          <ol aria-label={tx('messages')}></ol>
         </div>
       )
     }
 
     return (
       <div id='message-list' ref={messageListRef} onScroll={onScroll2}>
-        <ol>
+        <ol aria-label={tx('messages')}>
           <RovingTabindexProvider wrapperElementRef={messageListRef}>
             {messageListItems.length === 0 && <EmptyChatMessage chat={chat} />}
             {activeView.map(messageId => {
@@ -1006,6 +1023,8 @@ function JumpDownButton({
     countToShow = '99+'
   }
 
+  const stackIsEmpty = jumpToMessageStack.length === 0
+
   return (
     <>
       <div className='jump-down-button'>
@@ -1035,16 +1054,19 @@ function JumpDownButton({
               scrollIntoViewArg: { block: 'center' },
               focus: false,
             })
+            if (stackIsEmpty) {
+              // We're jumping to the very bottom, so let's mark all messages
+              // as seen, even if we're skipping over many messages
+              // without the user actually seeing them.
+              // See https://github.com/deltachat/deltachat-desktop/issues/3072.
+              markChatAsSeen(accountId, chat.id)
+            }
           }}
           // Technically this is not always "to bottom",
           // but perhaps it's good enough.
           aria-label={tx('menu_scroll_to_bottom')}
         >
-          <div
-            className={
-              'icon ' + (jumpToMessageStack.length > 0 ? 'back' : 'down')
-            }
-          />
+          <div className={'icon ' + (!stackIsEmpty ? 'back' : 'down')} />
         </button>
       </div>
     </>

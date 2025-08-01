@@ -3,9 +3,8 @@ import { AddMemberInnerDialog } from './AddMemberInnerDialog'
 import { useLazyLoadedContacts } from '../../contact/ContactList'
 import Dialog from '../../Dialog'
 import Icon from '../../Icon'
-import type { T } from '@deltachat/jsonrpc-client'
+import { C, type T } from '@deltachat/jsonrpc-client'
 import type { DialogProps } from '../../../contexts/DialogContext'
-import { InlineVerifiedIcon } from '../../VerifiedIcon'
 import { Avatar } from '../../Avatar'
 import styles from './styles.module.scss'
 
@@ -14,13 +13,15 @@ export function AddMemberDialog({
   onOk,
   groupMembers,
   listFlags,
-  isBroadcast = false,
+  titleMembersOrRecipients,
   isVerificationRequired = false,
 }: {
   onOk: (members: number[]) => void
   groupMembers: number[]
   listFlags: number
-  isBroadcast?: boolean
+  titleMembersOrRecipients: Parameters<
+    typeof AddMemberInnerDialog
+  >[0]['titleMembersOrRecipients']
   isVerificationRequired?: boolean
 } & DialogProps) {
   const [queryStr, setQueryStr] = useState('')
@@ -29,8 +30,12 @@ export function AddMemberDialog({
     contactCache,
     loadContacts,
     queryStrIsValidEmail,
-    refresh: refreshContacts,
+    refreshContacts,
   } = useLazyLoadedContacts(listFlags, queryStr)
+
+  // compare bitwise if address flag is set
+  const allowAddManually = (listFlags & C.DC_GCL_ADDRESS) !== 0
+
   return (
     <Dialog
       canOutsideClickClose={false}
@@ -56,8 +61,9 @@ export function AddMemberDialog({
         refreshContacts,
 
         groupMembers,
-        isBroadcast,
+        titleMembersOrRecipients,
         isVerificationRequired,
+        allowAddManually,
       })}
     </Dialog>
   )
@@ -84,7 +90,6 @@ export const AddMemberChip = (props: {
       </div>
       <div className={styles.DisplayName}>
         <div>{contact.displayName}</div>
-        {contact.isVerified && <InlineVerifiedIcon />}
       </div>
       <button
         className={styles.removeMember}

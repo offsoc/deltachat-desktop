@@ -2,11 +2,10 @@ import React, {
   useCallback,
   useContext,
   useEffect,
-  useMemo,
   useRef,
   useState,
 } from 'react'
-import { debounce } from 'debounce'
+import { throttle } from '@deltachat-desktop/shared/util'
 
 import AccountHoverInfo from './AccountHoverInfo'
 import AccountItem from './AccountItem'
@@ -30,6 +29,9 @@ import {
   useRovingTabindex,
 } from '../../contexts/RovingTabindex'
 import classNames from 'classnames'
+import { useRpcFetch } from '../../hooks/useFetch'
+import AlertDialog from '../dialogs/AlertDialog'
+import { unknownErrorToString } from '../helpers/unknownErrorToString'
 
 type Props = {
   onAddAccount: () => Promise<number>
@@ -46,9 +48,19 @@ export default function AccountListSidebar({
 }: Props) {
   const tx = useTranslationFunction()
 
-  const accountsListRef = useRef<HTMLDivElement>(null)
+  const accountsListRef = useRef<HTMLUListElement>(null)
   const { openDialog } = useDialog()
-  const [accounts, setAccounts] = useState<number[]>([])
+
+  const accountsFetch = useRpcFetch(BackendRemote.rpc.getAllAccountIds, [])
+  useEffect(() => {
+    const throttledRefreshAccountList = throttle(accountsFetch.refresh, 200)
+
+    BackendRemote.on('AccountsChanged', throttledRefreshAccountList)
+    return () => {
+      BackendRemote.off('AccountsChanged', throttledRefreshAccountList)
+    }
+  }, [accountsFetch.refresh])
+
   const [{ accounts: noficationSettings }] = useAccountNotificationStore()
 
   const { smallScreenMode } = useContext(ScreenContext)
@@ -66,20 +78,21 @@ export default function AccountListSidebar({
   }
 
   const [syncAllAccounts, setSyncAllAccounts] = useState(true)
-
-  const refresh = useMemo(
-    () => async () => {
-      const accounts = await BackendRemote.rpc.getAllAccountIds()
-      setAccounts(accounts)
+  useEffect(() => {
+    const refreshSyncAllAccounts = async () => {
       const desktopSettings = await runtime.getDesktopSettings()
       setSyncAllAccounts(desktopSettings.syncAllAccounts)
-    },
-    []
-  )
+    }
 
-  useEffect(() => {
-    refresh()
-  }, [selectedAccountId, refresh])
+    refreshSyncAllAccounts()
+
+    const throttledRefreshSyncAllAccounts = throttle(
+      refreshSyncAllAccounts,
+      200
+    )
+    /// now this workaround is only used when changing background sync setting
+    window.__updateAccountListSidebar = throttledRefreshSyncAllAccounts
+  }, [])
 
   const [accountForHoverInfo, internalSetAccountForHoverInfo] =
     useState<T.Account | null>(null)
@@ -117,19 +130,6 @@ export default function AccountListSidebar({
     updateHoverInfoPosition()
   }, [accountForHoverInfo, updateHoverInfoPosition])
 
-  useEffect(() => {
-    const debouncedUpdate = debounce(() => {
-      refresh()
-    }, 200)
-
-    /// now this workaround is only used when changing background sync setting
-    window.__updateAccountListSidebar = debouncedUpdate
-    BackendRemote.on('AccountsChanged', debouncedUpdate)
-    return () => {
-      BackendRemote.off('AccountsChanged', debouncedUpdate)
-    }
-  }, [refresh])
-
   const openSettings = () => openDialog(Settings)
 
   if (shouldBeHidden) {
@@ -144,29 +144,60 @@ export default function AccountListSidebar({
           data-tauri-drag-region
         />
       )}
-      <div
+      <ul
         ref={accountsListRef}
+        // Perhaps just "Profiles" would be more appropriate,
+        // because you can do other things with profiles in this list,
+        // but we have the same on Android.
+        aria-label={tx('switch_account')}
         className={styles.accountList}
         onScroll={updateHoverInfoPosition}
         role='tablist'
         aria-orientation='vertical'
       >
         <RovingTabindexProvider wrapperElementRef={accountsListRef}>
-          {accounts.map(id => (
-            <AccountItem
-              key={id}
-              accountId={id}
-              isSelected={selectedAccountId === id}
-              onSelectAccount={selectAccount}
-              openAccountDeletionScreen={openAccountDeletionScreen}
-              updateAccountForHoverInfo={updateAccountForHoverInfo}
-              syncAllAccounts={syncAllAccounts}
-              muted={noficationSettings[id]?.muted || false}
-            />
-          ))}
-          <AddAccountButton onClick={onAddAccount} />
+          {accountsFetch.lingeringResult?.ok === false ? (
+            <button
+              onClick={() => {
+                if (
+                  !accountsFetch.lingeringResult ||
+                  accountsFetch.lingeringResult.ok
+                ) {
+                  // This should not happen, TypeScript.
+                  throw new Error('expected non-ok value')
+                }
+                openDialog(AlertDialog, {
+                  message: tx(
+                    'error_x',
+                    'Failed to load account IDs:\n' +
+                      unknownErrorToString(accountsFetch.lingeringResult.err)
+                  ),
+                })
+              }}
+              aria-label={tx('error')}
+              title={tx('error')}
+            >
+              ⚠️
+            </button>
+          ) : (
+            accountsFetch.lingeringResult?.value.map(id => (
+              <AccountItem
+                key={id}
+                accountId={id}
+                isSelected={selectedAccountId === id}
+                onSelectAccount={selectAccount}
+                openAccountDeletionScreen={openAccountDeletionScreen}
+                updateAccountForHoverInfo={updateAccountForHoverInfo}
+                syncAllAccounts={syncAllAccounts}
+                muted={noficationSettings[id]?.muted || false}
+              />
+            ))
+          )}
+          <li>
+            <AddAccountButton onClick={onAddAccount} />
+          </li>
         </RovingTabindexProvider>
-      </div>
+      </ul>
       {/* The condition is the same as in https://github.com/deltachat/deltachat-desktop/blob/63af023437ff1828a27de2da37bf94ab180ec528/src/renderer/contexts/KeybindingsContext.tsx#L26 */}
       {window.__screen === Screens.Main && (
         <div className={styles.buttonsContainer}>

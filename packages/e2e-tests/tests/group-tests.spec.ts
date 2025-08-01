@@ -90,6 +90,23 @@ test('start chat with user', async ({ page, context, browserName }) => {
   await expect(sentMessageText).toHaveText(messageText)
 })
 
+test('unencrypted group (plain email)', async ({ page }) => {
+  await page.locator('#new-chat-button').click()
+
+  await expect(page.getByRole('button', { name: 'New Group' })).toBeVisible()
+
+  // Since we're on a Chatmail server, this button is not supposed to be shown.
+  // TODO we should still test the dialog somehow.
+  await expect(
+    page.getByRole('button', { name: 'New E-Mail' })
+  ).not.toBeVisible()
+  // Same button, but double-check, by ID.
+  await expect(page.locator('#newemail')).not.toBeVisible()
+
+  // Restore app state to "normal".
+  await page.getByRole('button', { name: 'Close' }).click()
+})
+
 test('create group', async ({ page, context, browserName }) => {
   if (browserName.toLowerCase().indexOf('chrom') > -1) {
     await context.grantPermissions(['clipboard-read', 'clipboard-write'])
@@ -168,7 +185,7 @@ test('Invite existing user to group', async ({
     userA.address
   )
   // verified chat after response from userA
-  await expect(page.locator('.verified-icon-info-msg')).toBeVisible()
+  await expect(page.locator('.e2ee-info')).toBeVisible()
   // userB has 2 new notifications now
   const badge = page
     .getByTestId(`account-item-${userB.id}`)
@@ -221,7 +238,7 @@ test('Invite new user to group', async ({ page, context, browserName }) => {
     userA.address
   )
   // verified chat after response from userA
-  await expect(page.locator('.verified-icon-info-msg')).toBeVisible()
+  await expect(page.locator('.e2ee-info')).toBeVisible()
   await page.getByTestId('chat-info-button').click()
   // new user sees group members
   await expect(
@@ -321,3 +338,9 @@ test('Edit group profile from context menu and rename group', async ({
     .filter({ hasText: groupName + ' edited' })
   await expect(renamedGroupchatListItem).toBeVisible()
 })
+
+test.fixme('create channel and add members', async () => {})
+
+test.fixme('accept or decline channel invite', async () => {})
+
+test.fixme('leave channel and remove from channel', async () => {})

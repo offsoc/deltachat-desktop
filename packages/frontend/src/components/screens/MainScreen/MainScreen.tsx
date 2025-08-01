@@ -12,12 +12,11 @@ import { useThreeDotMenu } from '../../ThreeDotMenu'
 import ChatList from '../../chat/ChatList'
 import { Avatar } from '../../Avatar'
 import ConnectivityToast from '../../ConnectivityToast'
-import MailingListProfile from '../../dialogs/MessageListProfile'
+import MailingListProfile from '../../dialogs/MailingListProfile'
 import SettingsStoreInstance, {
   useSettingsStore,
 } from '../../../stores/settings'
 import { BackendRemote, Type } from '../../../backend-com'
-import { InlineVerifiedIcon } from '../../VerifiedIcon'
 import Button from '../../Button'
 import Icon from '../../Icon'
 import SearchInput from '../../SearchInput'
@@ -35,6 +34,7 @@ import { openMapWebxdc } from '../../../system-integration/webxdc'
 import { ScreenContext } from '../../../contexts/ScreenContext'
 import MediaView from '../../dialogs/MediaView'
 import { openWebxdc } from '../../message/messageFunctions'
+import { useWebxdcMessageSentListener } from '../../../hooks/useWebxdcMessageSent'
 
 import type { T } from '@deltachat/jsonrpc-client'
 import CreateChat from '../../dialogs/CreateChat'
@@ -147,33 +147,51 @@ export default function MainScreen({ accountId }: Props) {
     })
   })
 
-  useEffect(() => {
-    const fetchMedia = async () => {
-      const maxIcons = smallScreenMode ? 1 : 3
-      if (!accountId || !chatId) {
-        return
-      }
-      const mediaIds = await BackendRemote.rpc.getChatMedia(
-        accountId,
-        chatId,
-        'Webxdc',
-        null,
-        null
-      )
-      mediaIds.reverse() // newest first
-      const mediaLoadResult = await BackendRemote.rpc.getMessages(
-        accountId,
-        mediaIds.slice(0, maxIcons)
-      )
-      const lastMessages = Object.values(mediaLoadResult).filter(
-        result => result.kind === 'message'
-      )
-      setLastWebxdcApps(lastMessages.reverse()) // show newest first
+  // Shared function to fetch Webxdc media
+  const fetchLastUsedApps = useCallback(async () => {
+    const maxIcons = smallScreenMode ? 1 : 3
+    if (!accountId || !chatId) {
+      return
     }
-    if (accountId && chatId) {
-      fetchMedia()
-    }
+    const mediaIds = await BackendRemote.rpc.getChatMedia(
+      accountId,
+      chatId,
+      'Webxdc',
+      null,
+      null
+    )
+    // mediaIds holds the ids of the last updated apps,
+    // in reverse order
+    mediaIds.reverse()
+    const firstFew = mediaIds.slice(0, maxIcons)
+
+    const mediaLoadResult = await BackendRemote.rpc.getMessages(
+      accountId,
+      firstFew
+    )
+    const lastUpdatedApps = firstFew
+      .map((id: number) => {
+        if (mediaLoadResult[id]?.kind === 'message') {
+          return mediaLoadResult[id]
+        }
+        return null
+      })
+      .filter(app => app !== null)
+
+    setLastWebxdcApps(lastUpdatedApps)
   }, [accountId, chatId, smallScreenMode])
+
+  useEffect(() => {
+    if (accountId && chatId) {
+      fetchLastUsedApps()
+    }
+  }, [accountId, chatId, fetchLastUsedApps])
+
+  // Listen for Webxdc messages being sent to the current chat
+  useWebxdcMessageSentListener(accountId || 0, chatId || 0, () => {
+    // Refresh Webxdc apps list when a Webxdc message is sent
+    fetchLastUsedApps()
+  })
 
   useEffect(() => {
     // Make sure it uses new version of settings store instance
@@ -300,7 +318,9 @@ function chatSubtitle(chat: Type.FullChat) {
       } else {
         return tx('mailing_list')
       }
-    } else if (chat.chatType === C.DC_CHAT_TYPE_BROADCAST) {
+    } else if (chat.chatType === C.DC_CHAT_TYPE_IN_BROADCAST) {
+      return tx('channel')
+    } else if (chat.chatType === C.DC_CHAT_TYPE_OUT_BROADCAST) {
       return tx('n_recipients', [String(chat.contactIds.length)], {
         quantity: chat.contactIds.length,
       })
@@ -332,11 +352,14 @@ function ChatHeading({ chat }: { chat: T.FullChat }) {
       return
     }
 
-    if (chat.chatType === C.DC_CHAT_TYPE_MAILINGLIST) {
+    if (
+      chat.chatType === C.DC_CHAT_TYPE_IN_BROADCAST ||
+      chat.chatType === C.DC_CHAT_TYPE_MAILINGLIST
+    ) {
       openDialog(MailingListProfile, { chat })
     } else if (
       chat.chatType === C.DC_CHAT_TYPE_GROUP ||
-      chat.chatType === C.DC_CHAT_TYPE_BROADCAST
+      chat.chatType === C.DC_CHAT_TYPE_OUT_BROADCAST
     ) {
       openViewGroupDialog(chat)
     } else {
@@ -370,7 +393,6 @@ function ChatHeading({ chat }: { chat: T.FullChat }) {
         <div className='navbar-chat-name'>
           <div className='truncated'>{chat.name}</div>
           <div className='chat_property_icons'>
-            {chat.isProtected && <InlineVerifiedIcon />}
             {chat.ephemeralTimer !== 0 && (
               <div
                 className={'disapearing-messages-icon'}
@@ -427,6 +449,52 @@ function ChatNavButtons({ chat }: { chat: T.FullChat }) {
   )
 }
 
+function AppIcon({ accountId, app }: { accountId: number; app: T.Message }) {
+  const [webxdcInfo, setWebxdcInfo] = useState<T.WebxdcMessageInfo | null>(null)
+  const [isLoadingWebxdcInfo, setIsLoadingWebxdcInfo] = useState(true)
+
+  useEffect(() => {
+    if (app.viewType === 'Webxdc') {
+      setIsLoadingWebxdcInfo(true)
+      BackendRemote.rpc
+        .getWebxdcInfo(accountId, app.id)
+        .then((info: T.WebxdcMessageInfo) => {
+          setWebxdcInfo(info)
+        })
+        .catch((error: any) => {
+          console.error('Failed to load webxdc info for app:', app.id, error)
+          setWebxdcInfo(null)
+        })
+        .finally(() => {
+          setIsLoadingWebxdcInfo(false)
+        })
+    }
+  }, [accountId, app.id, app.viewType])
+
+  const appName =
+    webxdcInfo?.name || (isLoadingWebxdcInfo ? 'Loading...' : 'Unknown App')
+
+  return (
+    <Button
+      styling='borderless'
+      key={app.id}
+      className={styles.webxdcIconButton}
+      title={appName}
+      aria-label={appName}
+      onClick={() => {
+        openWebxdc(app, webxdcInfo ?? undefined)
+      }}
+    >
+      <img
+        className={styles.webxdcIcon}
+        src={runtime.getWebxdcIconURL(accountId, app.id)}
+        alt={appName}
+        onContextMenu={(e: React.MouseEvent) => e.preventDefault()}
+      />
+    </Button>
+  )
+}
+
 function AppIcons({
   accountId,
   apps,
@@ -438,25 +506,13 @@ function AppIcons({
     return null
   }
   return (
-    <div className={styles.webxdcIcons} data-no-drag-region='true'>
+    <div
+      className={styles.webxdcIcons}
+      data-testid='last-used-apps'
+      data-no-drag-region='true'
+    >
       {apps.map(app => (
-        <Button
-          styling='borderless'
-          key={app.id}
-          className={styles.webxdcIconButton}
-          title={app.webxdcInfo?.name}
-          aria-label={app.webxdcInfo?.name}
-          onClick={() => {
-            openWebxdc(app)
-          }}
-        >
-          <img
-            className={styles.webxdcIcon}
-            src={runtime.getWebxdcIconURL(accountId, app.id)}
-            alt={app.webxdcInfo?.name}
-            onContextMenu={(e: React.MouseEvent) => e.preventDefault()}
-          />
-        </Button>
+        <AppIcon key={app.id} accountId={accountId} app={app} />
       ))}
     </div>
   )

@@ -9,7 +9,6 @@ import { mapCoreMsgStatus2String } from '../helpers/MapMsgStatus'
 import { getLogger } from '../../../../shared/logger'
 import { useContextMenuWithActiveState } from '../ContextMenu'
 import { selectedAccountId } from '../../ScreenController'
-import { InlineVerifiedIcon } from '../VerifiedIcon'
 import { runtime } from '@deltachat-desktop/runtime-interface'
 import { message2React } from '../message/MessageMarkdown'
 import { useRovingTabindex } from '../../contexts/RovingTabindex'
@@ -42,18 +41,13 @@ function Header({
   name,
   isPinned,
   isMuted,
-  isProtected,
-}: Pick<
-  ChatListItemType,
-  'lastUpdated' | 'name' | 'isPinned' | 'isMuted' | 'isProtected'
->) {
+}: Pick<ChatListItemType, 'lastUpdated' | 'name' | 'isPinned' | 'isMuted'>) {
   const tx = window.static_translate
   return (
     <div className='header'>
       <div className='name'>
         <span>
           <span className='truncated'>{name}</span>
-          {isProtected && <InlineVerifiedIcon />}
         </span>
       </div>
       {isMuted && <div className='mute_icon' aria-label={tx('mute')} />}
@@ -221,6 +215,7 @@ function ChatListItemArchiveLink({
 function ChatListItemError({
   chatListItem,
   onClick,
+  roleTab,
   isSelected,
   onContextMenu,
 }: {
@@ -231,6 +226,7 @@ function ChatListItemError({
   onContextMenu?: (
     event: React.MouseEvent<HTMLButtonElement, MouseEvent>
   ) => void
+  roleTab?: boolean
   isSelected?: boolean
 }) {
   log.info('Error Loading Chatlistitem ' + chatListItem.id, chatListItem.error)
@@ -252,6 +248,8 @@ function ChatListItemError({
       onKeyDown={tabindexOnKeydown}
       onFocus={tabindexSetAsActiveElement}
       onContextMenu={onContextMenu}
+      role={roleTab ? 'tab' : undefined}
+      aria-selected={isSelected}
       className={classNames('chat-list-item', tabindexClassName, {
         isError: true,
         selected: isSelected,
@@ -284,6 +282,7 @@ function ChatListItemNormal({
   chatListItem,
   onClick,
   isSelected,
+  roleTab,
   onContextMenu,
   isContextMenuActive,
 }: {
@@ -295,6 +294,7 @@ function ChatListItemNormal({
     event: React.MouseEvent<HTMLButtonElement, MouseEvent>
   ) => void
   isContextMenuActive?: boolean
+  roleTab?: boolean
   isSelected?: boolean
 }) {
   const ref = useRef<HTMLButtonElement>(null)
@@ -321,6 +321,8 @@ function ChatListItemNormal({
       onKeyDown={tabindexOnKeydown}
       onFocus={tabindexSetAsActiveElement}
       onContextMenu={onContextMenu}
+      role={roleTab ? 'tab' : undefined}
+      aria-selected={isSelected}
       className={classNames('chat-list-item', tabindexClassName, {
         'has-unread': chatListItem.freshMessageCounter > 0,
         'is-contact-request': chatListItem.isContactRequest,
@@ -347,7 +349,6 @@ function ChatListItemNormal({
         <Header
           lastUpdated={chatListItem.lastUpdated}
           name={chatListItem.name}
-          isProtected={chatListItem.isProtected}
           isPinned={chatListItem.isPinned}
           isMuted={chatListItem.isMuted}
         />
@@ -374,12 +375,19 @@ type ChatListItemProps = {
     event: React.MouseEvent<HTMLButtonElement, MouseEvent>
   ) => void
   isContextMenuActive?: boolean
+  /**
+   * Whether to set `role='tab'` on the item.
+   *
+   * Note that this doesn't apply to some items,
+   * such as `ChatListItemArchiveLink`.
+   */
+  roleTab?: boolean
   isSelected?: boolean
 }
 
 const ChatListItem = React.memo<ChatListItemProps>(
   props => {
-    const { chatListItem, onClick } = props
+    const { chatListItem, onClick, roleTab } = props
 
     // if not loaded by virtual list yet
     if (typeof chatListItem === 'undefined') return <PlaceholderChatListItem />
@@ -389,6 +397,7 @@ const ChatListItem = React.memo<ChatListItemProps>(
         <ChatListItemNormal
           chatListItem={chatListItem}
           onClick={onClick}
+          roleTab={roleTab}
           isSelected={props.isSelected}
           onContextMenu={props.onContextMenu}
           isContextMenuActive={props.isContextMenuActive}
@@ -399,6 +408,7 @@ const ChatListItem = React.memo<ChatListItemProps>(
         <ChatListItemError
           chatListItem={chatListItem}
           onClick={onClick}
+          roleTab={roleTab}
           isSelected={props.isSelected}
           onContextMenu={props.onContextMenu}
         />
@@ -504,9 +514,6 @@ export const ChatListItemMessageResult = React.memo<{
               <span className='truncated'>
                 {!isSingleChatSearch ? msr.chatName : msr.authorName}
               </span>
-              {!isSingleChatSearch && msr.isChatProtected && (
-                <InlineVerifiedIcon />
-              )}
             </span>
           </div>
           <div>

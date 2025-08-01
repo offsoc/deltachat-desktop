@@ -45,6 +45,7 @@
       white-space: nowrap;
       text-overflow: ellipsis;
       font-size: 18px;
+      user-select: none;
     }
   }
 }
@@ -95,6 +96,7 @@
     :global(.views) {
       display: flex;
       height: 100%;
+      padding: 4px 0;
     }
 
     :global(.navbar-button) {
